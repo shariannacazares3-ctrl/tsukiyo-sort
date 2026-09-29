@@ -32,7 +32,7 @@ All art is drawn with canvas code, and all audio is synthesized with the Web Aud
 - A night-street level map with konbini storefronts and neon signs.
 - Story scenes with the late-night regulars: Yuzu the sleepy student, Tanaka-san the salaryman, Mochi the cat, and the manager's sticky notes.
 - Juice everywhere: squash & stretch, sparkle bursts, floating points, screen shake, combo callouts ("Nice!" → "Great!" → "SUGOI!!") with rising pop pitch, and phone vibration.
-- Lofi city-pop loop (royal-road progression), rain ambience, and synthesized SFX, with sound toggles.
+- Lofi city-pop loop (royal-road progression), soft rain ambience, and synthesized SFX. Each has its own on/off toggle and volume slider in Settings (and in the pause menu); rain starts quiet so the music leads.
 - Cosmetics: shelf themes (Classic, Cozy Wood, Pastel Mint, Neon Night) and seasonal decor (Sakura, Summer Festival, Snowy Winter).
 - Optional pixel-art mode for the goods.
 - Progress saved in `localStorage`.

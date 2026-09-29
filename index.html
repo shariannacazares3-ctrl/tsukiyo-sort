@@ -115,6 +115,19 @@ button.chip:active{transform:scale(.94)}
 .tog::after{content:"";position:absolute;top:3px;left:3px;width:26px;height:26px;border-radius:50%;background:#fff;box-shadow:0 2px 4px rgba(0,0,0,.25);transition:transform .22s cubic-bezier(.3,1.6,.5,1)}
 .tog.on{background:#ff8fb8}
 .tog.on::after{transform:translateX(26px)}
+.set-row.audio{flex-direction:column;align-items:stretch;gap:8px}
+.set-row.audio .set-top{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.vol{display:flex;align-items:center;gap:10px;transition:opacity .2s}
+.vol.off{opacity:.45}
+.vol span{font-size:16px;width:20px;text-align:center}
+.vol b{min-width:40px;text-align:right;font-size:13px;color:#c2466f}
+.vol input{flex:1;min-width:0;height:32px;margin:0;background:none;-webkit-appearance:none;appearance:none;touch-action:none;cursor:pointer;
+  --p:50%}
+.vol input::-webkit-slider-runnable-track{height:10px;border-radius:6px;background:linear-gradient(90deg,#ff8fb8 var(--p),#f0dde4 var(--p))}
+.vol input::-moz-range-track{height:10px;border-radius:6px;background:#f0dde4}
+.vol input::-moz-range-progress{height:10px;border-radius:6px;background:#ff8fb8}
+.vol input::-webkit-slider-thumb{-webkit-appearance:none;width:26px;height:26px;margin-top:-8px;border-radius:50%;background:#fff;border:3px solid #ff77a6;box-shadow:0 2px 5px rgba(0,0,0,.25)}
+.vol input::-moz-range-thumb{width:20px;height:20px;border-radius:50%;background:#fff;border:3px solid #ff77a6;box-shadow:0 2px 5px rgba(0,0,0,.25)}
 
 /* ---------- shop ---------- */
 .tabs{display:flex;gap:6px;background:#ffe6d2;border-radius:16px;padding:4px;margin:8px 0 10px}
@@ -272,7 +285,7 @@ const SAVE_KEY = 'tsukiyo-mart-save-v1';
 const defaultSave = () => ({
   v: 1, coins: 150, stars: {}, best: {}, seen: {}, tips: {}, mode: 'relaxed',
   themes: ['classic'], theme: 'classic', decors: ['none'], decor: 'none',
-  settings: { music: true, sfx: true, vibe: true, pixel: false },
+  settings: { music: true, rain: true, sfx: true, musicVol: .8, rainVol: .3, sfxVol: .8, vibe: true, pixel: false },
   endlessBest: 0, endlessStage: 1, epilogue: false,
 });
 let SAVE = defaultSave();
@@ -1148,11 +1161,22 @@ function portraitURL(who) {
 
 /* ============================ 6. AUDIO ============================
    Everything is synthesized with Web Audio: juicy SFX and a lofi
-   city-pop loop (royal-road progression · FM e-piano · bass · drums,
-   vinyl crackle and soft rain).
+   city-pop loop (royal-road progression · FM e-piano · bass · drums)
+   and a rain ambience bed. Music, rain and SFX each have their own
+   channel with an on/off switch and a volume level.
    ================================================================== */
 const Sound = (() => {
-  let ctx = null, master, sfxBus, musicBus, musicIn, noiseBuf, ambient = null;
+  let ctx = null, master, sfxBus, musicBus, rainBus, musicIn, noiseBuf, ambient = null;
+  // Loudest gain each channel reaches at 100%. Rain tops out low so the music leads.
+  const MAX = { music: .6, rain: .45, sfx: .9 };
+  const bus = ch => ch === 'music' ? musicBus : ch === 'rain' ? rainBus : sfxBus;
+  const level = ch => SAVE.settings[ch] ? MAX[ch] * clamp(SAVE.settings[ch + 'Vol'] ?? 1, 0, 1) : 0;
+  function applyGain(ch, tc = .08) {
+    if (!ctx) return;
+    const g = bus(ch).gain;
+    g.cancelScheduledValues(ctx.currentTime);
+    g.setTargetAtTime(level(ch), ctx.currentTime, tc);
+  }
   let timer = null, step = 0, nextT = 0, loopN = 0, playing = false;
   const BPM = 84, STEP = 60 / BPM / 4;
 
@@ -1164,14 +1188,16 @@ const Sound = (() => {
     const comp = ctx.createDynamicsCompressor();
     comp.threshold.value = -16; comp.ratio.value = 4; comp.attack.value = .004; comp.release.value = .2;
     master = ctx.createGain(); master.gain.value = .9; master.connect(comp); comp.connect(ctx.destination);
-    sfxBus = ctx.createGain(); sfxBus.gain.value = SAVE.settings.sfx ? .75 : 0; sfxBus.connect(master);
+    sfxBus = ctx.createGain(); sfxBus.gain.value = level('sfx'); sfxBus.connect(master);
     musicBus = ctx.createGain(); musicBus.gain.value = 0; musicBus.connect(master);
+    rainBus = ctx.createGain(); rainBus.gain.value = 0; rainBus.connect(master);
     const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 3200; lp.Q.value = .4;
     musicIn = ctx.createGain(); musicIn.gain.value = 1; musicIn.connect(lp); lp.connect(musicBus);
     noiseBuf = ctx.createBuffer(1, ctx.sampleRate * 2, ctx.sampleRate);
     const d = noiseBuf.getChannelData(0);
     for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
     if (SAVE.settings.music) startMusic();
+    if (SAVE.settings.rain) { startAmbient(); applyGain('rain', .8); }
   }
 
   function tone(f, dur, o = {}) {
@@ -1310,31 +1336,39 @@ const Sound = (() => {
     const src = ctx.createBufferSource(); src.buffer = buf; src.loop = true;
     const hp = ctx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 180;
     const g = ctx.createGain(); g.gain.value = .22;
-    src.connect(hp); hp.connect(g); g.connect(musicBus); src.start();
+    src.connect(hp); hp.connect(g); g.connect(rainBus); src.start();
     ambient = src;
   }
   function startMusic() {
     if (!ctx || playing) return;
     playing = true;
-    musicBus.gain.cancelScheduledValues(ctx.currentTime);
-    musicBus.gain.setTargetAtTime(.42, ctx.currentTime, .6);
-    startAmbient();
+    applyGain('music', .6);
     nextT = ctx.currentTime + .1; step = 0; loopN = 0;
     timer = setInterval(scheduler, 30);
   }
   function stopMusic() {
     if (!ctx || !playing) return;
     playing = false; clearInterval(timer);
-    musicBus.gain.setTargetAtTime(0, ctx.currentTime, .15);
+    applyGain('music', .15);
   }
-  function setMusic(on) { SAVE.settings.music = on; persist(); if (!ctx) return; on ? startMusic() : stopMusic(); }
-  function setSfx(on) { SAVE.settings.sfx = on; persist(); if (sfxBus) sfxBus.gain.value = on ? .75 : 0; }
+  function setChannel(ch, on) {
+    SAVE.settings[ch] = on; persist();
+    if (!ctx) return;
+    if (ch === 'music') { on ? startMusic() : stopMusic(); return; }
+    if (ch === 'rain' && on) startAmbient();
+    applyGain(ch, .1);
+  }
+  function setVolume(ch, v, save) {
+    SAVE.settings[ch + 'Vol'] = clamp(v, 0, 1);
+    if (save) persist();
+    applyGain(ch, .04);
+  }
   document.addEventListener('visibilitychange', () => {
     if (!ctx) return;
     if (document.hidden) ctx.suspend(); else ctx.resume();
   });
   const play = (name, ...a) => { if (ctx && SAVE.settings.sfx && sfx[name]) sfx[name](...a); };
-  return { init, play, setMusic, setSfx };
+  return { init, play, setChannel, setVolume };
 })();
 
 function vibrate(p) { if (SAVE.settings.vibe && navigator.vibrate) { try { navigator.vibrate(p); } catch (e) { /* ignore */ } } }
@@ -2380,7 +2414,7 @@ function showPause() {
   G.paused = true;
   const p = openModal(`<button class="x-close" data-act="resume">✕</button><h2>Break Time ☕</h2>
     <p class="muted">${G.endless ? `Endless · Stage ${G.stage}` : `Level ${G.level}`} · ${G.mode === 'timed' ? '⏱ Timed' : '🌙 Relaxed'}</p>
-    ${settingsRows(['music', 'sfx', 'vibe'])}
+    ${settingsRows(['music', 'rain', 'sfx', 'vibe'])}
     <div class="btns"><button class="btn pink block" data-act="resume">▶ Resume</button>
     <div class="btns row" style="margin-top:0"><button class="btn small" data-act="restart">↻ Restart</button><button class="btn small" data-act="map">🗺 Street</button></div></div>`, {
     resume: () => { closeModal(); G.paused = false; },
@@ -2581,11 +2615,13 @@ $('#map-shop').onclick = () => { Sound.play('click'); showShop(); };
 $('#map-set').onclick = () => { Sound.play('click'); showSettings(); };
 $('#btn-shop-t').onclick = () => { Sound.init(); Sound.play('click'); showShop(); };
 $('#btn-set-t').onclick = () => { Sound.init(); Sound.play('click'); showSettings(); };
-function syncSoundBtn() { $('#btn-snd-t').textContent = (SAVE.settings.music || SAVE.settings.sfx) ? '🔊' : '🔇'; }
+const AUDIO = ['music', 'rain', 'sfx'];
+const anySound = () => AUDIO.some(ch => SAVE.settings[ch]);
+function syncSoundBtn() { $('#btn-snd-t').textContent = anySound() ? '🔊' : '🔇'; }
 $('#btn-snd-t').onclick = () => {
   Sound.init();
-  const on = !(SAVE.settings.music || SAVE.settings.sfx);
-  Sound.setMusic(on); Sound.setSfx(on); syncSoundBtn();
+  const on = !anySound();
+  AUDIO.forEach(ch => Sound.setChannel(ch, on)); syncSoundBtn();
   Sound.play('click'); toast(on ? '🔊 Sound on — enjoy the lofi beats!' : '🔇 Sound off');
 };
 $('#btn-start').onclick = () => {
@@ -2595,28 +2631,54 @@ $('#btn-start').onclick = () => {
 
 /* ---------- settings ---------- */
 const SET_LABEL = {
-  music: ['🎵 Lofi music', 'City-pop beats & rain'], sfx: ['🔊 Sound effects', 'Pops, chimes & meows'],
+  music: ['🎵 Lofi music', 'City-pop beats'], rain: ['🌧️ Rain ambience', 'Soft rain & vinyl crackle'],
+  sfx: ['🔊 Sound effects', 'Pops, chimes & meows'],
   vibe: ['📳 Vibration', 'Buzz on pops (phones)'], pixel: ['👾 Pixel-art goods', 'Retro crunchy sprites'],
 };
+const volPct = ch => Math.round((SAVE.settings[ch + 'Vol'] ?? 1) * 100);
 function settingsRows(keys) {
-  return keys.map(k => `<div class="set-row"><div>${SET_LABEL[k][0]}<small>${SET_LABEL[k][1]}</small></div><button class="tog ${SAVE.settings[k] ? 'on' : ''}" data-set="${k}" aria-label="${k}"></button></div>`).join('');
+  return keys.map(k => {
+    const head = `<div>${SET_LABEL[k][0]}<small>${SET_LABEL[k][1]}</small></div><button class="tog ${SAVE.settings[k] ? 'on' : ''}" data-set="${k}" aria-label="${SET_LABEL[k][0]} on/off"></button>`;
+    if (!AUDIO.includes(k)) return `<div class="set-row">${head}</div>`;
+    const v = volPct(k);
+    return `<div class="set-row audio"><div class="set-top">${head}</div>
+      <div class="vol ${SAVE.settings[k] ? '' : 'off'}" data-volrow="${k}"><span>🔈</span>
+      <input type="range" min="0" max="100" step="1" value="${v}" style="--p:${v}%" data-vol="${k}" aria-label="${SET_LABEL[k][0]} volume"><b>${v}%</b></div></div>`;
+  }).join('');
 }
 function wireToggles(p) {
+  const syncRow = k => {
+    const t = p.querySelector(`[data-set="${k}"]`), r = p.querySelector(`[data-volrow="${k}"]`);
+    if (t) t.classList.toggle('on', !!SAVE.settings[k]);
+    if (r) r.classList.toggle('off', !SAVE.settings[k]);
+  };
   p.querySelectorAll('[data-set]').forEach(b => b.addEventListener('click', () => {
     Sound.init();
     const k = b.dataset.set, on = !SAVE.settings[k];
-    b.classList.toggle('on', on);
-    if (k === 'music') Sound.setMusic(on);
-    else if (k === 'sfx') Sound.setSfx(on);
+    if (AUDIO.includes(k)) Sound.setChannel(k, on);
     else { SAVE.settings[k] = on; persist(); }
-    if (k === 'pixel') { SPR.px = 0; R.bgKey = ''; if (R.L) buildSprites(R.L.size); R.titleBoard = R.titleBoard; }
+    syncRow(k);
+    if (k === 'pixel') { SPR.px = 0; R.bgKey = ''; if (R.L) buildSprites(R.L.size); }
     if (k === 'vibe' && on) vibrate(30);
     Sound.play('click');
   }));
+  p.querySelectorAll('[data-vol]').forEach(inp => {
+    const k = inp.dataset.vol, label = inp.nextElementSibling;
+    const show = () => { inp.style.setProperty('--p', inp.value + '%'); label.textContent = inp.value + '%'; };
+    inp.addEventListener('input', () => {
+      Sound.init();
+      if (!SAVE.settings[k] && +inp.value > 0) { Sound.setChannel(k, true); syncRow(k); }
+      Sound.setVolume(k, inp.value / 100, false); show();
+    });
+    inp.addEventListener('change', () => {
+      Sound.setVolume(k, inp.value / 100, true);
+      if (k === 'sfx') Sound.play('pop', 3);
+    });
+  });
 }
 function showSettings() {
   const p = openModal(`<button class="x-close" data-act="close">✕</button><h2>Settings ⚙️</h2>
-    ${settingsRows(['music', 'sfx', 'vibe', 'pixel'])}
+    ${settingsRows(['music', 'rain', 'sfx', 'vibe', 'pixel'])}
     <div class="btns"><button class="btn small block" data-act="story">📖 Replay the opening story</button>
     <button class="btn small block" data-act="reset" style="color:#c2466f">🗑 Reset all progress</button></div>
     <p class="muted" style="margin-top:14px">月夜マート · Tsukiyo Mart: Midnight Restock<br>All art & sound made with code. No ads, no purchases — boosters use coins you earn. ♡</p>`, {
@@ -2626,7 +2688,7 @@ function showSettings() {
       openModal(`<h2>Reset everything?</h2><p>Stars, coins, cosmetics and story progress will be erased.</p>
         <div class="btns row"><button class="btn small" data-act="no">Keep it</button><button class="btn pink small" data-act="yes">Reset</button></div>`, {
         no: showSettings,
-        yes: () => { SAVE = defaultSave(); persist(); closeModal(); R.bgKey = ''; SPR.px = 0; toast('Fresh start! 🌱'); if (R.mode === 'map') buildMap(); },
+        yes: () => { SAVE = defaultSave(); persist(); closeModal(); R.bgKey = ''; SPR.px = 0; AUDIO.forEach(ch => Sound.setChannel(ch, true)); syncSoundBtn(); toast('Fresh start! 🌱'); if (R.mode === 'map') buildMap(); },
       });
     },
   });
