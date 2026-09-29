@@ -464,6 +464,41 @@ function evalMove(s, m) {
   return sc;
 }
 
+// Can a triple ever be made again? Only goods that aren't iced, boxed or locked
+// can take part (front rows and the rows behind them on open shelves). Ice, tape
+// and locks only give way to a match, so if no kind has three such goods (lucky
+// cats fill any gap), the board is a dead end no matter how goods are moved.
+function canEverMatch(s) {
+  const cnt = new Map(); let cats = 0;
+  for (const sl of s.slots) {
+    if (sl.type !== 'shelf') continue;
+    for (const row of [sl.front, ...sl.layers]) for (const it of row) {
+      if (!it || it.ice) continue;
+      if (it.k === CAT) cats++; else cnt.set(it.k, (cnt.get(it.k) || 0) + 1);
+    }
+  }
+  if (cats >= 3) return true;
+  for (const n of cnt.values()) if (n + cats >= 3) return true;
+  return false;
+}
+const isStuck = s => countLeft(s) > 0 && (!listMoves(s).length || !canEverMatch(s));
+
+// Tenchō's free rescue for a dead end: thaw every good, tear off all tape, open
+// every locked shelf, and shuffle if the shelves are still packed. Returns events.
+function rescueBoard(s, rng = Math.random) {
+  const ev = [];
+  for (const sl of s.slots) {
+    if (sl.type === 'box') { sl.hp = 0; sl.type = 'shelf'; ev.push({ t: 'boxhit', slot: sl.id, hp: 0 }); }
+    else if (sl.type === 'lock') { sl.type = 'shelf'; ev.push({ t: 'unlock', slot: sl.id }); }
+    sl.front.forEach((it, p) => { if (it && it.ice) { it.ice = 0; ev.push({ t: 'thaw', slot: sl.id, p, u: it.u }); } });
+    for (const row of sl.layers) for (const it of row) if (it) { it.ice = 0; it.key = 0; }
+    for (const it of sl.front) if (it) it.key = 0;
+  }
+  resolve(s, s.slots.map(x => x.id), ev);
+  if (countLeft(s) > 0 && !listMoves(s).length) ev.push(...shuffleBoard(s, rng));
+  return ev;
+}
+
 function bestMove(s) {
   let best = null, bs = -1e9;
   for (const m of listMoves(s)) { const v = evalMove(s, m); if (v > bs) { bs = v; best = m; } }
@@ -615,7 +650,10 @@ function buildOnce(def, seed) {
   // Don't leave a board with nothing to move.
   if (!listMoves(s).length) return null;
   const locks = s.slots.filter(x => x.type === 'lock').length;
-  const keyC = shelfItems.filter(o => !o.it.ice).sort((a, b) => (b.li > 0) - (a.li > 0));
+  const locked = new Set();
+  s.slots.forEach(sl => { if (sl.type === 'lock') [sl.front, ...sl.layers].forEach(r => r.forEach(it => { if (it) locked.add(it.k); })); });
+  const keyOk = shelfItems.filter(o => !o.it.ice && !locked.has(o.it.k));
+  const keyC = (keyOk.length >= locks ? keyOk : shelfItems.filter(o => !o.it.ice)).sort((a, b) => (b.li > 0) - (a.li > 0));
   for (let i = 0; i < locks && i < keyC.length; i++) keyC[i].it.key = 1;
   return s;
 }
@@ -2156,7 +2194,7 @@ G.doMove = function (a, pa, b, pb) {
 function afterMove(lastPop) {
   updateHud();
   if (countLeft(G.state) === 0) { G.over = true; schedule(lastPop + 750, winLevel); return; }
-  if (!listMoves(G.state).length) schedule(lastPop + 600, () => { if (!G.over && G.state && !listMoves(G.state).length) showJam(); });
+  if (isStuck(G.state)) schedule(lastPop + 600, () => { if (!G.over && G.state && isStuck(G.state) && !modalOpen()) showJam(); });
 }
 
 const comboWord = n => n >= 5 ? 'SUGOI!!' : n === 4 ? 'Excellent!' : n === 3 ? 'Great!' : 'Nice!';
@@ -2220,6 +2258,14 @@ function processEvents(ev) {
           Sound.play('unlock'); vibrate([15, 30, 15]);
         });
       }
+    } else if (e.t === 'unlock') {
+      const sv = R.sv[e.slot]; sv.lockShown = true;
+      schedule(lastPop + 350, () => {
+        const K = R.L.slots[e.slot];
+        sv.lockShown = undefined; sv.unlockT = 1;
+        burst(K.x + K.w / 2, K.base - size * .6, ['#ffd66b', '#fff4b0'], 18);
+        Sound.play('unlock');
+      });
     } else if (e.t === 'bye') {
       e.items.forEach(f => {
         const v = R.vis.get(f.item.u), SL = R.L.slots[f.slot], t0 = v || itemTarget(SL, f.layer + 1, f.p);
@@ -2259,10 +2305,7 @@ function useBooster(kind) {
   if (G.over && !(kind === 'time' && G.timeLeft <= 0) && !(kind === 'undo' || kind === 'shuffle')) return;
   if (kind === 'time' && G.mode !== 'timed') { toast('⏳ Extra Time is for ⏱ Timed mode. Relax, no clock here! 🌙'); return; }
   if (kind === 'undo' && !G.undo.length) { toast('Nothing to undo yet!'); return; }
-  if (kind === 'hint') {
-    const b = bestMove(G.state);
-    if (!b) { toast('No moves left… try a Shuffle! 🔀'); return; }
-  }
+  if ((kind === 'hint' || kind === 'shuffle') && isStuck(G.state)) { showJam(); return; }
   const cost = COST[kind];
   if (SAVE.coins < cost) { Sound.play('bad'); toast(`Need ${cost} 🪙 — clear levels & combos to earn more!`); return; }
   SAVE.coins -= cost; persist(); G.boosters++;
@@ -2317,7 +2360,7 @@ function updateHud() {
     const b = $('#' + id); b.querySelector('.cost').textContent = COST[k];
     if (k !== 'time') b.classList.toggle('off', SAVE.coins < COST[k]);
   }
-  $('#b-shuffle').classList.toggle('glow', !listMoves(G.state).length && left > 0);
+  $('#b-shuffle').classList.toggle('glow', isStuck(G.state));
 }
 function updateTimer(dt) {
   const cm = $('#combo-meter');
@@ -2387,15 +2430,29 @@ function finale() {
 }
 function showJam() {
   Sound.play('bad'); vibrate([20, 40, 20]);
-  openModal(`<h2>Shelves Jammed! 😵</h2><p>No room to move any goods. Try a booster, or restart the shift.</p>
-    <div class="btns"><button class="btn mint block" data-act="shuffle">🔀 Shuffle · ${COST.shuffle}🪙</button>
+  const full = !listMoves(G.state).length;
+  openModal(`<h2>${full ? 'Shelves Jammed! 😵' : 'No Matches Left! 🫣'}</h2>
+    <p>${full ? 'There\'s no room to move any goods.' : 'Every third twin is iced, taped in a box or locked away, so no triple can be made.'}
+    Don't worry — Tenchō will help for free!</p>
+    <div class="btns"><button class="btn pink block" data-act="rescue">🦸 Tenchō's Rescue · Free</button>
     <button class="btn block" data-act="undo">↩️ Undo · ${COST.undo}🪙</button>
-    <div class="btns row" style="margin-top:0"><button class="btn small" data-act="restart">↻ Restart</button><button class="btn small" data-act="map">🗺 Street</button></div></div>`, {
-    shuffle: () => { closeModal(); useBooster('shuffle'); },
+    <div class="btns row" style="margin-top:0"><button class="btn small" data-act="restart">↻ Restart</button><button class="btn small" data-act="map">🗺 Street</button></div></div>
+    <p class="muted">The rescue thaws the ice, tears off the tape, unlocks the shelves and tidies up.</p>`, {
+    rescue: () => { closeModal(); useRescue(); },
     undo: () => { closeModal(); useBooster('undo'); },
     restart: () => { closeModal(); restartLevel(); },
     map: () => { closeModal(); showMap(); },
   });
+}
+function useRescue() {
+  if (!G.state || G.over) return;
+  pushUndo();
+  G.hint = null; IN.sel = null;
+  const ev = rescueBoard(G.state);
+  for (const v of R.vis.values()) { v.fly = true; v.vsq -= 5; }
+  Sound.play('whoosh'); Sound.play('sparkle');
+  floatText(W / 2, R.L.y0 + R.L.boardH * .3, "Tenchō's Rescue! 🦸", '#ffe58a', clamp(R.L.size * .4, 18, 28));
+  afterMove(processEvents(ev));
 }
 function showTimeUp() {
   Sound.play('fail'); vibrate([40, 60, 40]);
